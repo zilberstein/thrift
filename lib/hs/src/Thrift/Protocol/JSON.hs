@@ -95,7 +95,6 @@ buildJSONValue (TByte b) = buildShowable b
 buildJSONValue (TI16 i) = buildShowable i
 buildJSONValue (TI32 i) = buildShowable i
 buildJSONValue (TI64 i) = buildShowable i
-buildJSONValue (TFloat f) = buildShowable f
 buildJSONValue (TDouble d) = buildShowable d
 buildJSONValue (TString s) = B.char8 '\"' <> escape s <> B.char8 '\"'
 
@@ -131,7 +130,6 @@ parseJSONValue T_BYTE = TByte <$> signed decimal
 parseJSONValue T_I16 = TI16 <$> signed decimal
 parseJSONValue T_I32 = TI32 <$> signed decimal
 parseJSONValue T_I64 = TI64 <$> signed decimal
-parseJSONValue T_FLOAT = TFloat . realToFrac <$> double
 parseJSONValue T_DOUBLE = TDouble <$> double
 parseJSONValue T_STRING = TString <$> escapedString
 parseJSONValue T_STOP = fail "parseJSONValue: cannot parse type T_STOP"

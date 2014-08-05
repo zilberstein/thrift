@@ -101,7 +101,6 @@ buildCompactValue (TByte b) = int8 b
 buildCompactValue (TI16 i) = buildVarint $ i16ToZigZag i
 buildCompactValue (TI32 i) = buildVarint $ i32ToZigZag i
 buildCompactValue (TI64 i) = buildVarint $ i64ToZigZag i
-buildCompactValue (TFloat f) = floatBE f
 buildCompactValue (TDouble d) = doubleBE d
 buildCompactValue (TString s) = buildVarint len <> lazyByteString s
   where
@@ -145,8 +144,7 @@ parseCompactValue T_BYTE = TByte . fromIntegral <$> P.anyWord8
 parseCompactValue T_I16 = TI16 <$> parseVarint zigZagToI16
 parseCompactValue T_I32 = TI32 <$> parseVarint zigZagToI32
 parseCompactValue T_I64 = TI64 <$> parseVarint zigZagToI64
-parseCompactValue T_FLOAT = TFloat . bsToFloating byteSwap32 <$> P.take 4
-parseCompactValue T_DOUBLE = TDouble . bsToFloating byteSwap64 <$> P.take 8
+parseCompactValue T_DOUBLE = TDouble . bsToDouble <$> P.take 8
 parseCompactValue T_STRING = do
   len :: Word32 <- parseVarint id
   TString . LBS.fromStrict <$> P.take (fromIntegral len)
@@ -242,7 +240,6 @@ fromTType ty = case ty of
   T_SET{} -> 0x0A
   T_MAP{} -> 0x0B
   T_STRUCT{} -> 0x0C
-  T_FLOAT -> 0x0D
   T_VOID -> error "No Compact type for T_VOID"
 
 typeOf :: ThriftVal -> Word8
@@ -259,7 +256,6 @@ typeOf v = case v of
   TSet{} -> 0x0A
   TMap{} -> 0x0B
   TStruct{} -> 0x0C
-  TFloat _ -> 0x0D
 
 typeFrom :: Word8 -> ThriftType
 typeFrom w = case w of
@@ -275,5 +271,4 @@ typeFrom w = case w of
   0x0A -> T_SET T_VOID
   0x0B -> T_MAP T_VOID T_VOID
   0x0C -> T_STRUCT Map.empty
-  0x0D -> T_FLOAT
   n -> error $ "typeFrom: " ++ show n ++ " is not a compact type"

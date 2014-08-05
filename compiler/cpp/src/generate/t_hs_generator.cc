@@ -269,12 +269,12 @@ string t_hs_generator::hs_imports() {
       "import Prelude ( Bool(..), Enum, Float, IO, Double, String, Maybe(..),\n"
       "                 Eq, Show, Ord,\n"
       "                 concat, error, fromIntegral, fromEnum, length, map,\n"
-      "                  maybe, otherwise, return, show, toEnum,\n"
+      "                  maybe, not, null, otherwise, return, show, toEnum,\n"
       "                 enumFromTo, Bounded, minBound, maxBound,\n"
-      "                 (.), (&&), (||), (==), (++), ($), (-))\n"
+      "                 (.), (&&), (||), (==), (++), ($), (-), (>>=))\n"
       "\n"
       "import Control.Exception\n"
-      "import Control.Monad ( liftM, ap )\n"
+      "import Control.Monad ( liftM, ap, when )\n"
       "import Data.ByteString.Lazy (ByteString)\n"
       "import Data.Functor ( (<$>) )\n"
       "import Data.Hashable\n"
@@ -479,7 +479,8 @@ string t_hs_generator::render_const_value(t_type* type, t_const_value* value) {
 
       out << (first ? "" : ", ");
       out << field_name(cname, fname) << " = ";
-      if (field->get_req() == t_field::T_OPTIONAL) {
+      if (field->get_req() == t_field::T_OPTIONAL ||
+	  ((t_type*)field->get_type())->is_xception()) {
         out << "Just ";
       }
       out << const_value;
@@ -590,7 +591,8 @@ void t_hs_generator::generate_hs_struct_definition(ofstream& out,
       }
       string mname = m_iter->get_name();
       out << field_name(tname, mname) << " :: ";
-      if (m_iter->get_req() == t_field::T_OPTIONAL) {
+      if (m_iter->get_req() == t_field::T_OPTIONAL ||
+	  ((t_type*)m_iter->get_type())->is_xception()) {
         out << "Maybe ";
       }
       out << render_hs_type(m_iter->get_type(), true) << endl;
@@ -642,7 +644,8 @@ void t_hs_generator::generate_hs_struct_arbitrary(ofstream& out, t_struct* tstru
         indent(out) << "`ap`";
       }
       out << "(";
-      if (m_iter->get_req() == t_field::T_OPTIONAL) {
+      if (m_iter->get_req() == t_field::T_OPTIONAL ||
+	  ((t_type*)m_iter->get_type())->is_xception()) {
         out << "liftM Just ";
       }
       out << "arbitrary)" << endl;
@@ -712,17 +715,19 @@ void t_hs_generator::generate_hs_struct_reader(ofstream& out, t_struct* tstruct)
     if (f_iter->get_req() == t_field::T_REQUIRED) {
       out << "error \"Missing required field: " << fname << "\"";
     } else {
-      if (f_iter->get_req() == t_field::T_OPTIONAL &&
-          f_iter->get_value() == nullptr)
-        out << "Nothing";
-      else {
+      if ((f_iter->get_req() == t_field::T_OPTIONAL ||
+	   ((t_type*)f_iter->get_type())->is_xception()) &&
+	  f_iter->get_value() == nullptr) {
+	out << "Nothing";
+      } else {
         out << field_name(sname, fname) << " default_" << sname;
       }
     }
     out << ") ";
 
     out << "(\\(_," << val << ") -> ";
-    if (f_iter->get_req() == t_field::T_OPTIONAL)
+    if (f_iter->get_req() == t_field::T_OPTIONAL ||
+	((t_type*)f_iter->get_type())->is_xception())
       out << "Just ";
     generate_deserialize_field(out, f_iter, val);
     out << ")";
@@ -759,10 +764,51 @@ void t_hs_generator::generate_hs_struct_writer(ofstream& out,
   string v = tmp("_v");
 
   indent(out) << "from_" << name << " :: " << name << " -> ThriftVal" << endl;
-  indent(out) << "from_" << name << " record = TStruct $ Map.fromList $ catMaybes" << endl;
+  indent(out) << "from_" << name << " record = TStruct $ Map.fromList ";
   indent_up();
 
+  // Get Exceptions
+  bool hasExn = false;
+  for (auto* f_iter : fields) {
+    if (((t_type*)f_iter->get_type())->is_xception()) {
+      hasExn = true;
+      break;
+    }
+  }
+
   bool isfirst = true;
+  if (hasExn) {
+    out << endl;
+    indent(out) << "(let exns = catMaybes ";
+    indent_up();
+    for (auto* f_iter : fields) {
+      if (((t_type*)f_iter->get_type())->is_xception()) {
+	if (isfirst) {
+	  out << "[ ";
+	  isfirst = false;
+	} else {
+	  out << ", ";
+	}
+	string mname = f_iter->get_name();
+	int32_t key = f_iter->get_key();
+	out << "(\\" << v << " -> (" << key << ", (\"" << mname << "\",";
+	generate_serialize_type(out, f_iter->get_type(), v);
+	out << "))) <$> " << field_name(name, mname) << " record";
+      }
+    }
+    if (!isfirst) {
+      out << "]" << endl;
+    }
+    indent_down();
+    indent(out) << "in if not (null exns) then exns else ";
+    indent_up();
+  } else {
+    out << "$ ";
+  }
+
+  out << "catMaybes" << endl;
+  // Get the Rest
+  isfirst = true;
   for (auto* f_iter : fields) {
     // Write field header
     if (isfirst) {
@@ -775,13 +821,15 @@ void t_hs_generator::generate_hs_struct_writer(ofstream& out,
     int32_t key = f_iter->get_key();
     out << "(\\";
     out << v << " -> ";
-    if (f_iter->get_req() != t_field::T_OPTIONAL) {
+    if (f_iter->get_req() != t_field::T_OPTIONAL &&
+	!((t_type*)f_iter->get_type())->is_xception()) {
       out << "Just ";
     }
     out << "(" << key << ", (\"" << mname << "\",";
     generate_serialize_type(out, f_iter->get_type(), v);
     out << "))) ";
-    if (f_iter->get_req() != t_field::T_OPTIONAL) {
+    if (f_iter->get_req() != t_field::T_OPTIONAL &&
+	!((t_type*)f_iter->get_type())->is_xception()) {
       out << "$";
     } else {
       out << "<$>";
@@ -795,7 +843,10 @@ void t_hs_generator::generate_hs_struct_writer(ofstream& out,
   } else {
     indent(out) << "]" << endl;
   }
-
+  if (hasExn) {
+    indent(out) << ")" << endl;
+    indent_down();
+  }
   indent_down();
 
   // write
@@ -936,7 +987,8 @@ void t_hs_generator::generate_hs_default(ofstream& out,
     t_type* type = get_true_type(f_iter->get_type());
     t_const_value* value = f_iter->get_value();
     indent(out) << field_name(name, mname) << " = ";
-    if (f_iter->get_req() == t_field::T_OPTIONAL) {
+    if (f_iter->get_req() == t_field::T_OPTIONAL ||
+	((t_type*)f_iter->get_type())->is_xception()) {
       if (value == nullptr) {
         out << "Nothing";
       } else {
@@ -1075,7 +1127,8 @@ void t_hs_generator::generate_service_client(t_service* tservice) {
       string fieldname = fld_iter->get_name();
       f_client_ << (first ? "" : ",");
       f_client_ << field_name(argsname, fieldname) << "=";
-      if (fld_iter->get_req() == t_field::T_OPTIONAL)
+      if (fld_iter->get_req() == t_field::T_OPTIONAL ||
+	  ((t_type*)fld_iter->get_type())->is_xception())
         f_client_ << "Just ";
       f_client_ << "arg_" << fieldname;
       first = false;
@@ -1099,12 +1152,18 @@ void t_hs_generator::generate_service_client(t_service* tservice) {
       indent_up();
 
       indent(f_client_) << "(fname, mtype, rseqid) <- readMessage ip" << endl;
-      indent(f_client_) << "if mtype == M_EXCEPTION then do" << endl;
-      indent(f_client_) << "  x <- readAppExn ip" << endl;
-      indent(f_client_) << "  throw x" << endl;
-      indent(f_client_) << "  else return ()" << endl;
+      indent(f_client_) << "when (mtype == M_EXCEPTION) $ readAppExn ip >>= throw" << endl;
 
       indent(f_client_) << "res <- read_" << resultname << " ip" << endl;
+
+      t_struct* xs = (*f_iter)->get_xceptions();
+      const vector<t_field*>& xceptions = xs->get_members();
+
+      for (auto x_iter : xceptions) {
+	indent(f_client_) << "maybe (return ()) throw ("
+			  << field_name(resultname, x_iter->get_name())
+			  << " res)" << endl;
+      }
 
       if (!(*f_iter)->get_returntype()->is_void())
         indent(f_client_) << "return $ " << field_name(resultname, "success") << " res" << endl;
@@ -1216,23 +1275,23 @@ void t_hs_generator::generate_process_function(t_service* tservice,
   const vector<t_field*>& xceptions = xs->get_members();
   vector<t_field*>::const_iterator x_iter;
 
-  size_t n = xceptions.size();
-  indent(f_service_) << "res <- ";
+  size_t n = xceptions.size() + 1;
   // Try block for a function with exceptions
   if (n > 0) {
     for(size_t i = 0; i < n; i++) {
-      f_service_ << "(Control.Exception.catch" << endl;
+      indent(f_service_) << "(Control.Exception.catch" << endl;
       indent_up();
-      indent(f_service_);
     }
   }
 
-  f_service_ << "(do" << endl;
-  indent_up();
+  if (n > 0) {
+    indent(f_service_) << "(do" << endl;
+    indent_up();
+  }
   indent(f_service_);
 
   if (!tfunction->is_oneway() && !tfunction->get_returntype()->is_void())
-    f_service_ << "res <- ";
+    f_service_ << "val <- ";
 
   f_service_ << "Iface." << decapitalize(tfunction->get_name()) << " handler";
   for (f_iter = fields.begin(); f_iter != fields.end(); ++f_iter)
@@ -1241,26 +1300,40 @@ void t_hs_generator::generate_process_function(t_service* tservice,
 
   if (!tfunction->is_oneway() && !tfunction->get_returntype()->is_void()) {
     f_service_ << endl;
-    indent(f_service_) << "return default_" << resultname << "{" <<
-      field_name(resultname, "success") << " = res}";
+    indent(f_service_) << "let res = default_" << resultname << "{" <<
+      field_name(resultname, "success") << " = val}";
 
   } else if (!tfunction->is_oneway()) {
     f_service_ << endl;
-    indent(f_service_) << "return default_" << resultname;
+    indent(f_service_) << "let res = default_" << resultname;
   }
+  f_service_ << endl;
 
-  f_service_ << ")" << endl;
-  indent_down();
+  // Shortcut out here for oneway functions
+  if (tfunction->is_oneway()) {
+    indent(f_service_) << "return ()";
+  } else {
+    indent(f_service_ ) << "writeMessage oprot (\"" << tfunction->get_name() << "\", M_REPLY, seqid)" << endl;
+    indent(f_service_ ) << "write_" << resultname << " oprot res" << endl;
+    indent(f_service_ ) << "tFlush (getTransport oprot)";
+  }
+  if (n > 0) {
+    f_service_ << ")";
+    indent_down();
+  }
+  f_service_ << endl;
 
-  if (xceptions.size() > 0 && !tfunction->is_oneway()) {
+  if (n > 0) {
     for (x_iter = xceptions.begin(); x_iter != xceptions.end(); ++x_iter) {
-      indent(f_service_) << "(\\e  -> " << endl;
+      indent(f_service_) << "(\\e  -> do" << endl;
       indent_up();
 
       if (!tfunction->is_oneway()) {
-        indent(f_service_) << "return default_" << resultname << "{" <<
-          field_name(resultname, (*x_iter)->get_name()) << " = e}";
-
+	indent(f_service_) << "let res = default_" << resultname << "{"
+			   << field_name(resultname, (*x_iter)->get_name()) << " = Just e}" << endl;
+	indent(f_service_) << "writeMessage oprot (\"" << tfunction->get_name() << "\", M_REPLY, seqid)" << endl;
+	indent(f_service_ ) << "write_" << resultname << " oprot res" << endl;
+	indent(f_service_ ) << "tFlush (getTransport oprot)";
       } else {
         indent(f_service_) << "return ()";
       }
@@ -1269,21 +1342,25 @@ void t_hs_generator::generate_process_function(t_service* tservice,
       indent_down();
       indent_down();
     }
-  }
+    indent(f_service_) << "((\\_ -> do" << endl;
+    indent_up();
 
-  // Shortcut out here for oneway functions
-  if (tfunction->is_oneway()) {
-    indent(f_service_) << "return ()" << endl;
+    if (!tfunction->is_oneway()) {
+      indent(f_service_) << "writeMessage oprot (\"" << tfunction->get_name() << "\", M_EXCEPTION, seqid)" << endl;
+      indent(f_service_ ) << "writeAppExn oprot (AppExn AE_UNKNOWN \"\")" << endl;
+      indent(f_service_ ) << "tFlush (getTransport oprot)";
+    } else {
+      indent(f_service_) << "return ()";
+    }
+
+    f_service_ << ") :: SomeException -> IO ()))" << endl;
     indent_down();
-    return;
+    indent_down();
+      
   }
-
-  indent(f_service_ ) << "writeMessage oprot (\"" << tfunction->get_name() << "\", M_REPLY, seqid);" << endl;
-  indent(f_service_ ) << "write_" << resultname << " oprot res" << endl;
-  indent(f_service_ ) << "tFlush (getTransport oprot)" << endl;
-
   // Close function
   indent_down();
+
 }
 
 /**
@@ -1463,7 +1540,9 @@ string t_hs_generator::function_type(t_function* tfunc, bool options, bool io, b
   const vector<t_field*>& fields = tfunc->get_arglist()->get_members();
   vector<t_field*>::const_iterator f_iter;
   for (auto& f_iter : fields) {
-    if (f_iter->get_req() == t_field::T_OPTIONAL) result += "Maybe ";
+    if (f_iter->get_req() == t_field::T_OPTIONAL ||
+	((t_type*)f_iter->get_type())->is_xception())
+      result += "Maybe ";
     result += render_hs_type(f_iter->get_type(), options);
     result += " -> ";
   }
